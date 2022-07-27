@@ -15,6 +15,7 @@ NOTES:
   - To prevent the deployed contract from being modified or deleted, it should not have any access
     keys on its account.
 */
+use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_contract_standards::non_fungible_token::metadata::{
     NFTContractMetadata, NonFungibleTokenMetadataProvider, TokenMetadata, NFT_METADATA_SPEC,
 };
@@ -22,10 +23,10 @@ use near_contract_standards::non_fungible_token::NonFungibleToken;
 use near_contract_standards::non_fungible_token::{Token, TokenId};
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::LazyOption;
-use near_sdk::env::random_seed;
-use near_sdk::json_types::{ValidAccountId};
+use near_sdk::json_types::ValidAccountId;
+use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{
-    env, near_bindgen, AccountId, BorshStorageKey, PanicOnDefault, Promise, PromiseOrValue,
+    env, log, near_bindgen, AccountId, BorshStorageKey, PanicOnDefault, Promise, PromiseOrValue,
 };
 
 near_sdk::setup_alloc!();
@@ -35,6 +36,7 @@ near_sdk::setup_alloc!();
 pub struct Contract {
     tokens: NonFungibleToken,
     metadata: LazyOption<NFTContractMetadata>,
+    accepted_ft: Option<ValidAccountId>,
 }
 
 const DATA_IMAGE_SVG_CIRCLE: &str = "data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMTIyNiAxNDgxIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxwYXRoIGQ9Ik0wIDEzOTRWODdDMCA0Ni4zIDEzLjMgMTkuOCA0MCA3LjUgNjYuNy00LjggOTguNy4zIDEzNiAyM2wxMDM0IDYzNGMzNy4zIDIyLjcgNTYgNTAuMyA1NiA4M3MtMTguNyA2MC4zLTU2IDgzTDEzNiAxNDU4Yy0zNy4zIDIyLjctNjkuMyAyNy44LTk2IDE1LjUtMjYuNy0xMi4zLTQwLTM4LjgtNDAtNzkuNXoiIGZpbGw9IiNmZmYiLz48L3N2Zz4=";
@@ -58,8 +60,8 @@ impl Contract {
             owner_id,
             NFTContractMetadata {
                 spec: NFT_METADATA_SPEC.to_string(),
-                name: "Squid Game theme NFT - example".to_string(),
-                symbol: "SQUIDEXAMPLE".to_string(),
+                name: "Example token".to_string(),
+                symbol: "EXAMPLE".to_string(),
                 icon: Some(DATA_IMAGE_SVG_CIRCLE.to_string()),
                 base_uri: None,
                 reference: None,
@@ -81,7 +83,18 @@ impl Contract {
                 Some(StorageKey::Approval),
             ),
             metadata: LazyOption::new(StorageKey::Metadata, Some(&metadata)),
+            accepted_ft: None,
         }
+    }
+
+    #[payable]
+    pub fn set_accepted_ft(&mut self, accepted_ft: Option<ValidAccountId>) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.tokens.owner_id,
+            "Unauthorized"
+        );
+        self.accepted_ft = accepted_ft
     }
 
     /// Mint a new token with ID=`token_id` belonging to `receiver_id`.
@@ -102,47 +115,78 @@ impl Contract {
         self.tokens
             .mint(token_id, receiver_id, Some(token_metadata))
     }
+}
 
-    #[payable]
-    pub fn lucky_draw(&mut self, receiver_id: ValidAccountId) {
-        let rand = *random_seed().get(0).unwrap();
-        let rand_str = rand.to_string();
-        let token_metadata = TokenMetadata {
-            title: Some(format!("Test {}", rand_str)), // ex. "Arch Nemesis: Mail Carrier" or "Parcel #5055"
-            description: (Some(format!("Test description {}", rand_str))), // free-form description
-            media: Some(format!(
-                "ipfs://QmcsicJCLQcKdB2ZFMcksrVDijPE7AsAww9QgQfqf1rhRJ/{}.png",
-                rand_str
-            )), // URL to associated media, preferably to decentralized, content-addressed storage
-            media_hash: None, // Base64-encoded sha256 hash of content referenced by the `media` field. Required if `media` is included.
-            copies: Some(1), // number of copies of this set of metadata in existence when token was minted.
-            issued_at: None, // ISO 8601 datetime when token was issued or minted
-            expires_at: None, // ISO 8601 datetime when token expires
-            starts_at: None, // ISO 8601 datetime when token starts being valid
-            updated_at: None, // ISO 8601 datetime when token was last updated
-            extra: None, // anything extra the NFT wants to store on-chain. Can be stringified JSON.
-            reference: None, // URL to an off-chain JSON file with more info.
-            reference_hash: None, // Base64-encoded sha256 hash of JSON from reference field. Required if `reference` is included.
-        };
+#[derive(Debug, Serialize, Deserialize)]
+struct FtOnTransferMsg {
+    token_ids: Vec<TokenId>,
+}
 
-        self.tokens
-            .mint(TokenId::from(rand_str), receiver_id, Some(token_metadata));
-    }
+#[near_bindgen]
+impl FungibleTokenReceiver for Contract {
+    fn ft_on_transfer(
+        &mut self,
+        sender_id: ValidAccountId,
+        amount: U128,
+        msg: String,
+    ) -> PromiseOrValue<U128> {
+        assert!(self.accepted_ft.is_some(), "must set accepted_ft");
+        assert!(
+            self.accepted_ft.as_ref().unwrap().to_string() == env::predecessor_account_id(),
+            "caller not match accepted_ft"
+        );
 
-    #[payable]
-    pub fn test_ed25519(&mut self, signature: String, public_key: String, message: String) {
-        use ed25519_dalek::{PublicKey, Signature};
-        use ed25519_dalek::Verifier;
+        println!("message {}", msg);
 
-        let signature_bytes = hex::decode(signature).expect("Cannot decode signature");
-        let signature_ = Signature::from_bytes(&signature_bytes)
-            .expect("Cannot create signature from bytes");
-        let public_key_decode = hex::decode(public_key).expect("Cannot decode public_key");
-        let public_key =
-            PublicKey::from_bytes(&public_key_decode).expect("Cannot create public_key bytes");
+        let msg = serde_json::from_str::<FtOnTransferMsg>(&msg).expect("failed to parse msg");
 
-        let verify = public_key.verify(message.as_bytes(), &signature_);
-        assert!(verify.is_ok(), "Fail verification");
+        let owner_id = &self.tokens.owner_id;
+        let not_owner_tokens: Vec<String> = msg
+            .token_ids
+            .iter()
+            .map(|token_id| {
+                let id = self.tokens.owner_by_id.get(&token_id);
+                id.expect("token_id not found")
+            })
+            .filter(|id| id != owner_id)
+            .collect();
+        println!("not_owner_tokens {:?}", not_owner_tokens);
+
+        assert!(not_owner_tokens.is_empty(), "some tokens are already sold");
+
+        let total_price: u128 = msg
+            .token_ids
+            .iter()
+            .map(|token_id| {
+                let meta = self
+                    .tokens
+                    .token_metadata_by_id
+                    .as_ref()
+                    .expect("must have token_metadata_by_id map")
+                    .get(&token_id);
+                meta.expect("token_metadata not found")
+            })
+            .map(|meta| {
+                let extra = meta.extra.expect("not have extra information (price)");
+                u128::from_str_radix(&extra, 10).expect("cannot convert extra information (price)")
+            })
+            .fold(0, |acc, item| acc + item);
+
+        assert!(
+            amount.0 > total_price,
+            "amount of fungible token transfered is not enough"
+        );
+
+        for token_id in msg.token_ids {
+            self.nft_transfer(
+                sender_id.clone(),
+                token_id,
+                None,
+                Some("sold by owner".to_string()),
+            );
+        }
+
+        return PromiseOrValue::Value(U128::from(10));
     }
 }
 
@@ -165,7 +209,7 @@ mod tests {
 
     use super::*;
 
-    const MINT_STORAGE_COST: u128 = 5870000000000000000000;
+    const MINT_STORAGE_COST: u128 = 5930000000000000000000;
 
     fn get_context(predecessor_account_id: ValidAccountId) -> VMContextBuilder {
         let mut builder = VMContextBuilder::new();
@@ -187,7 +231,7 @@ mod tests {
             expires_at: None,
             starts_at: None,
             updated_at: None,
-            extra: None,
+            extra: Some("10".to_string()),
             reference: None,
             reference_hash: None,
         }
@@ -372,5 +416,53 @@ mod tests {
             .attached_deposit(0)
             .build());
         assert!(!contract.nft_is_approved(token_id.clone(), accounts(1), Some(1)));
+    }
+
+    #[test]
+    fn test_ft_on_transfer() {
+        let mut context = get_context(accounts(0));
+        testing_env!(context.build());
+        let mut contract = Contract::new_default_meta(accounts(0).into());
+
+        testing_env!(context
+            .storage_usage(env::storage_usage())
+            .attached_deposit(MINT_STORAGE_COST)
+            .predecessor_account_id(accounts(0))
+            .build());
+
+        let token_id = "0".to_string();
+        contract.nft_mint(token_id.clone(), accounts(0), sample_token_metadata());
+        let token_id = "1".to_string();
+        contract.nft_mint(token_id.clone(), accounts(0), sample_token_metadata());
+        let token_id = "2".to_string();
+        contract.nft_mint(token_id.clone(), accounts(0), sample_token_metadata());
+
+        testing_env!(context
+            .storage_usage(env::storage_usage())
+            .attached_deposit(1)
+            .predecessor_account_id(accounts(0))
+            .build());
+
+        // Buy 2 tokens using Fungible token
+        contract.ft_on_transfer(
+            accounts(1),
+            U128::from(100),
+            "{\"token_ids\": [\"0\", \"2\"]}".to_string(),
+        );
+        let token_0_does_not_belong_account_0 = contract
+            .tokens
+            .owner_by_id
+            .get(&"0".to_string())
+            .and_then(|t| Some(t != accounts(0).to_string()))
+            .unwrap();
+        assert!(token_0_does_not_belong_account_0);
+
+        let token_1_still_belong_account_0 = contract
+            .tokens
+            .owner_by_id
+            .get(&"1".to_string())
+            .and_then(|t| Some(t == accounts(0).to_string()))
+            .unwrap();
+        assert!(token_1_still_belong_account_0);
     }
 }
