@@ -140,7 +140,7 @@ impl FungibleTokenReceiver for Contract {
 
         let msg = serde_json::from_str::<FtOnTransferMsg>(&msg).expect("failed to parse msg");
 
-        let owner_id = &self.tokens.owner_id;
+        let owner_id = &self.tokens.owner_id.clone();
         let not_owner_tokens: Vec<String> = msg
             .token_ids
             .iter()
@@ -178,15 +178,14 @@ impl FungibleTokenReceiver for Contract {
         );
 
         for token_id in msg.token_ids {
-            self.nft_transfer(
-                sender_id.clone(),
-                token_id,
-                None,
-                Some("sold by owner".to_string()),
+            self.tokens.internal_transfer_unguarded(
+                &token_id,
+                &owner_id,
+                &sender_id.to_string(),
             );
         }
 
-        return PromiseOrValue::Value(U128::from(10));
+        return PromiseOrValue::Value(U128::from(total_price));
     }
 }
 
