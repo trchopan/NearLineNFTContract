@@ -173,7 +173,7 @@ impl FungibleTokenReceiver for Contract {
             .fold(0, |acc, item| acc + item);
 
         assert!(
-            amount.0 > total_price,
+            amount.0 >= total_price,
             "amount of fungible token transfered is not enough"
         );
 
