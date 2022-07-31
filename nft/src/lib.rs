@@ -172,20 +172,17 @@ impl FungibleTokenReceiver for Contract {
             })
             .fold(0, |acc, item| acc + item);
 
-        assert!(
-            amount.0 >= total_price,
-            "amount of fungible token transfered is not enough"
-        );
+        let remain = amount
+            .0
+            .checked_sub(total_price)
+            .expect("amount of fungible token transfered is not enough");
 
         for token_id in msg.token_ids {
-            self.tokens.internal_transfer_unguarded(
-                &token_id,
-                &owner_id,
-                &sender_id.to_string(),
-            );
+            self.tokens
+                .internal_transfer_unguarded(&token_id, &owner_id, &sender_id.to_string());
         }
 
-        return PromiseOrValue::Value(U128::from(total_price));
+        return PromiseOrValue::Value(U128::from(remain));
     }
 }
 
